@@ -44,11 +44,28 @@ export function TabsProvider({ children }: { children: React.ReactNode }) {
   const [meta, setMeta] = useState<Record<number, TabMeta>>({});
   const hydrated = useRef(false);
   const [isHydrated, setIsHydrated] = useState(false);
+  // Tab mở qua "?batch=" là tab trình duyệt riêng biệt → lưu state vào sessionStorage
+  // (cô lập theo từng tab) thay vì localStorage, để các đợt mở không trộn vào nhau.
+  const storageRef = useRef<Storage | null>(null);
 
-  // Khôi phục tab từ localStorage.
+  // Khôi phục tab từ storage phù hợp (local cho messenger chính, session cho batch).
   useEffect(() => {
+    let storage: Storage = localStorage;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const token = new URLSearchParams(window.location.search).get("batch");
+      // batchMode “dính” theo tab để giữ cô lập qua reload/điều hướng (URL bị thay đổi).
+      if (token !== null) {
+        sessionStorage.setItem("messenger.batchMode", "1");
+        sessionStorage.setItem("messenger.batchToken", token);
+      }
+      if (sessionStorage.getItem("messenger.batchMode") === "1") storage = sessionStorage;
+    } catch {
+      /* ignore */
+    }
+    storageRef.current = storage;
+
+    try {
+      const raw = storage.getItem(STORAGE_KEY);
       if (raw) {
         const p = JSON.parse(raw) as Persisted;
         setOpenTabs(p.openTabs ?? []);
@@ -66,7 +83,7 @@ export function TabsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!hydrated.current) return;
     try {
-      localStorage.setItem(
+      (storageRef.current ?? localStorage).setItem(
         STORAGE_KEY,
         JSON.stringify({ openTabs, activeTabId, meta } satisfies Persisted),
       );
