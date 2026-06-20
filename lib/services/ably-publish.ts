@@ -1,0 +1,81 @@
+import * as Ably from "ably";
+
+// Channel/event khớp dora-backend: PushMessage("all", "new-message-event", ...)
+export const ABLY_CHANNEL = "all";
+export const NEW_MESSAGE_EVENT = "new-message-event";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var _ablyRest: Ably.Rest | undefined;
+}
+
+function getRest(): Ably.Rest | null {
+  const key = process.env.ABLY_KEY;
+  if (!key) return null;
+  if (!global._ablyRest) global._ablyRest = new Ably.Rest({ key });
+  return global._ablyRest;
+}
+
+// Event/channel cho luồng GỬI tin (extension nghe trên channel = shop_name).
+export const CHAT_MESSAGE_EVENT = "chat-message";
+
+/**
+ * Publish 1 event mỗi conversation có message mới (best-effort, không throw).
+ * Frontend nghe event này để refetch realtime.
+ */
+export async function publishNewMessages(conversationIds: number[]): Promise<void> {
+  const rest = getRest();
+  if (!rest || conversationIds.length === 0) return;
+  const channel = rest.channels.get(ABLY_CHANNEL);
+  await Promise.all(
+    conversationIds.map((id) =>
+      channel
+        .publish(NEW_MESSAGE_EVENT, { conversation_id: id })
+        .catch((e) => console.warn("[ably] publish failed:", e?.message ?? e)),
+    ),
+  );
+}
+
+/**
+ * Đẩy yêu cầu gửi tin tới 1 browser extension đang online (mirror DORA
+ * PushMessageOnly1Browser): channel = shop_name, event "chat-message".
+ * Trả về clientId được nhắm tới, hoặc null nếu không có browser nào online.
+ */
+export async function publishChatMessage(
+  shopName: string,
+  data: { conversation_id: number; message: { id: string; message: string; attachments: string[] } },
+): Promise<string | null> {
+  const rest = getRest();
+  if (!rest || !shopName) return null;
+  const channel = rest.channels.get(shopName);
+
+  // Lấy presence → chọn 1 browser (cái cuối) để chỉ 1 client xử lý.
+  const presence = await channel.presence.get();
+  const members = presence.items ?? [];
+  if (members.length === 0) return null;
+  const targetClientId = members[members.length - 1].clientId;
+  if (!targetClientId) return null;
+
+  await channel.publish(CHAT_MESSAGE_EVENT, { ...data, clientId: targetClientId });
+  return targetClientId;
+}
+
+/**
+ * Tập shop_name đang online (extension enter presence trên channel "all-shops").
+ * Mirror dora AblyService.GetOnlineShops.
+ */
+export async function getOnlineShopNames(): Promise<Set<string>> {
+  const rest = getRest();
+  const names = new Set<string>();
+  if (!rest) return names;
+  try {
+    const presence = await rest.channels.get("all-shops").presence.get();
+    for (const m of presence.items ?? []) {
+      const data = m.data as { shop_name?: string } | undefined;
+      if (data?.shop_name) names.add(data.shop_name);
+    }
+  } catch (e) {
+    console.warn("[ably] presence all-shops failed:", (e as Error)?.message);
+  }
+  return names;
+}
